@@ -7,6 +7,7 @@ dependencies = []
 
 [project.urls]
 Repository = "https://github.com/daceheg/ComfyUI-civitai-mcp"
+Homepage = "https://github.com/daceheg/ComfyUI-civitai-mcp"
 
 [tool.comfy]
 PublisherId = "daceheg"

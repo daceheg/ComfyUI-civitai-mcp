@@ -22,6 +22,9 @@ It allows you to automatically publish your generated images directly to Civitai
 
 ## 🛠️ Installation
 
+### ComfyUI Manager (Recommended)
+Search for **ComfyUI Civitai MCP** in the [ComfyUI Manager](https://github.com/ltdrdata/ComfyUI-Manager) node registry and install with one click.
+
 ### Linux / macOS
 Clone this repository into your ComfyUI `custom_nodes` directory:
 ```bash
