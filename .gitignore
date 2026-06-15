@@ -1,0 +1,9 @@
+# Ignore Civitai API key file to prevent accidental commits
+civitai_key.txt
+
+# Python compiled files and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
