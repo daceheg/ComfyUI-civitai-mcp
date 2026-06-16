@@ -25,7 +25,7 @@ class CivitaiPostImage:
     RETURN_TYPES = ("INT", "STRING")
     RETURN_NAMES = ("post_id", "post_url")
     FUNCTION = "post_image"
-    CATEGORY = "Civitai"
+    CATEGORY = "Civitai-mcp"
 
     def post_image(self, image, publish, title="", description="", model_version_id=0, collection_id=0):
         # ComfyUI images are tensors with shape [B, H, W, C]
@@ -106,7 +106,7 @@ class CivitaiCreatePost:
     RETURN_TYPES = ("INT", "STRING")
     RETURN_NAMES = ("post_id", "post_url")
     FUNCTION = "create_post"
-    CATEGORY = "Civitai"
+    CATEGORY = "Civitai-mcp"
 
     def create_post(self, images, publish, title, description, model_version_id, collection_id):
         # Extract scalar options from lists
@@ -225,7 +225,7 @@ class CivitaiGetCurrentChallenge:
     RETURN_TYPES = ("INT", "INT", "STRING", "STRING", "INT", "INT", "INT", "INT")
     RETURN_NAMES = ("challenge_id", "collection_id", "title", "description", "model_version_id", "model_id", "lora_id", "lora_version_id")
     FUNCTION = "get_challenge"
-    CATEGORY = "Civitai"
+    CATEGORY = "Civitai-mcp"
 
     def get_challenge(self):
         import re
@@ -298,7 +298,7 @@ class CivitaiGetModelMetadata:
     RETURN_TYPES = ("INT", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")
     RETURN_NAMES = ("model_id", "model_name", "version_name", "base_model", "trigger_words", "air_urn", "download_url")
     FUNCTION = "get_metadata"
-    CATEGORY = "Civitai"
+    CATEGORY = "Civitai-mcp"
 
     def get_metadata(self, model_version_id):
         if model_version_id <= 0:
@@ -336,7 +336,7 @@ class CivitaiGetImageMetadata:
     RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "FLOAT", "STRING", "INT", "INT")
     RETURN_NAMES = ("prompt", "negative_prompt", "seed", "steps", "cfg_scale", "sampler_name", "width", "height")
     FUNCTION = "get_metadata"
-    CATEGORY = "Civitai"
+    CATEGORY = "Civitai-mcp"
 
     def get_metadata(self, image_id, max_rating="XXX"):
         if image_id <= 0:
@@ -371,7 +371,7 @@ class CivitaiAccountStatus:
     RETURN_TYPES = ("STRING", "INT", "BOOLEAN", "BOOLEAN", "BOOLEAN")
     RETURN_NAMES = ("username", "user_id", "is_moderator", "is_onboarded", "muted")
     FUNCTION = "get_status"
-    CATEGORY = "Civitai"
+    CATEGORY = "Civitai-mcp"
 
     def get_status(self):
         res = civitai_api.call_mcp_tool("whoami", {})
@@ -400,7 +400,7 @@ class CivitaiGetImage:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
     FUNCTION = "get_image"
-    CATEGORY = "Civitai"
+    CATEGORY = "Civitai-mcp"
 
     def get_image(self, image_id, max_rating="XXX"):
         if image_id <= 0:
