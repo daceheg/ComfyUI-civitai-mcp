@@ -333,32 +333,36 @@ class CivitaiGetImageMetadata:
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "FLOAT", "STRING", "INT", "INT")
-    RETURN_NAMES = ("prompt", "negative_prompt", "seed", "steps", "cfg_scale", "sampler_name", "width", "height")
+    RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "FLOAT", "STRING", "INT", "INT", "STRING")
+    RETURN_NAMES = ("prompt", "negative_prompt", "seed", "steps", "cfg_scale", "sampler_name", "width", "height", "tags")
     FUNCTION = "get_metadata"
     CATEGORY = "Civitai-mcp"
 
     def get_metadata(self, image_id, max_rating="XXX"):
         if image_id <= 0:
-            return ("", "", 0, 0, 0.0, "", 0, 0)
-            
+            return ("", "", 0, 0, 0.0, "", 0, 0, "")
+
         data = civitai_api.get_image_metadata(image_id, nsfw_level=max_rating)
-        width = data.get("width", 0)
-        height = data.get("height", 0)
-        
-        meta_root = data.get("meta") or {}
-        # The REST API nests the generation parameters under a secondary "meta" key
-        meta = meta_root.get("meta") if isinstance(meta_root.get("meta"), dict) else meta_root
-        
+
+        # The API returns generation parameters directly under "meta" (flatMeta=true)
+        meta = data.get("meta") or {}
+
+        # Top-level width/height can be null; fall back to the values in meta
+        width = data.get("width") or meta.get("width", 0)
+        height = data.get("height") or meta.get("height", 0)
+
         prompt = meta.get("prompt", "")
         negative_prompt = meta.get("negativePrompt", "")
         seed = meta.get("seed", 0)
         steps = meta.get("steps", 0)
         cfg_scale = float(meta.get("cfgScale", 0.0))
         sampler_name = meta.get("sampler", "")
-        
+
+        # Tags come from withTags=true as a list of {id, name}; expose names as a comma-separated string
+        tags = ", ".join(t.get("name", "") for t in (data.get("tags") or []) if t.get("name"))
+
         print(f"[Civitai MCP] Retrieved image metadata for ID {image_id} (max rating: {max_rating})")
-        return (prompt, negative_prompt, seed, steps, cfg_scale, sampler_name, width, height)
+        return (prompt, negative_prompt, seed, steps, cfg_scale, sampler_name, width, height, tags)
 
 
 class CivitaiAccountStatus:

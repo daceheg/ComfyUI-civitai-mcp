@@ -343,7 +343,7 @@ def get_image_metadata(image_id, nsfw_level="XXX", api_key=None):
         "XXX": ("X", 31)
     }
     nsfw_val, level_val = rating_map.get(nsfw_level, ("X", 31))
-    url = f"https://civitai.com/api/v1/images?imageId={image_id}&withMeta=true&nsfw={nsfw_val}&browsingLevel={level_val}"
+    url = f"https://civitai.com/api/v1/images?imageId={image_id}&withMeta=true&flatMeta=true&withTags=true&nsfw={nsfw_val}&browsingLevel={level_val}"
     headers = {
         "User-Agent": "ComfyUI-Civitai-MCP/1.0",
         "Accept": "application/json"
