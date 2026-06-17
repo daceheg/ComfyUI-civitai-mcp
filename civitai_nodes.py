@@ -1,4 +1,5 @@
 import io
+import json
 import base64
 import torch
 from PIL import Image
@@ -10,6 +11,23 @@ def _tensor_to_pil(image_tensor):
     """Convert a single ComfyUI image tensor [H, W, C] to a PIL image."""
     img_np = (image_tensor.cpu().numpy() * 255).clip(0, 255).astype("uint8")
     return Image.fromarray(img_np)
+
+
+def _parse_workflow_json(workflow_json):
+    """Parse a workflow_json string (from a Civitai loader) into a graph dict.
+
+    Returns the dict, or None when empty/unparseable -- in which case the post
+    nodes fall back to the live workflow from the hidden prompt/extra_pnginfo.
+    """
+    if isinstance(workflow_json, dict):
+        return workflow_json or None
+    if isinstance(workflow_json, str) and workflow_json.strip():
+        try:
+            parsed = json.loads(workflow_json)
+            return parsed if isinstance(parsed, dict) and parsed else None
+        except Exception:
+            print("[Civitai MCP] Warning: workflow_json could not be parsed; using live workflow.")
+    return None
 
 class CivitaiPostImage:
     @classmethod
@@ -25,6 +43,7 @@ class CivitaiPostImage:
                 "model_version_id": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "collection_id": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "a1111_params": ("STRING", {"default": "", "multiline": True, "tooltip": "A1111-format generation parameters to embed. Wire ComfyUI-Image-Saver's 'a1111_params' output here for full Civitai metadata (prompt, sampler, Civitai resources/AIRs). If empty, the node auto-detects from the workflow."}),
+                "workflow_json": ("STRING", {"default": "", "multiline": True, "forceInput": True, "tooltip": "ComfyUI workflow JSON to embed (PNG only). Wire a Civitai metadata loader's 'workflow_json' output here to preserve the original graph of a re-posted image. Takes precedence over the live workflow; falls back to it when empty."}),
                 "embed_metadata": ("BOOLEAN", {"default": True, "tooltip": "Embed generation parameters into the uploaded image so Civitai shows full metadata."}),
                 "embed_workflow": ("BOOLEAN", {"default": True, "tooltip": "Embed the ComfyUI workflow + prompt graph (PNG only) so the post is reproducible by drag-and-drop into ComfyUI."}),
                 "file_format": (["png", "jpg"], {"default": "png", "tooltip": "PNG carries metadata + workflow in text chunks (lossless). JPG carries the parameters in EXIF (smaller, no workflow)."}),
@@ -44,8 +63,9 @@ class CivitaiPostImage:
     CATEGORY = "Civitai-mcp"
 
     def post_image(self, image, publish, title="", description="", model_version_id=0,
-                   collection_id=0, a1111_params="", embed_metadata=True, embed_workflow=True,
-                   file_format="png", jpg_quality=95, prompt=None, extra_pnginfo=None):
+                   collection_id=0, a1111_params="", workflow_json="", embed_metadata=True,
+                   embed_workflow=True, file_format="png", jpg_quality=95, prompt=None,
+                   extra_pnginfo=None):
         # ComfyUI images are tensors with shape [B, H, W, C]
         # We only take the first image if it's a batch
         if len(image.shape) == 4 and image.shape[0] > 1:
@@ -62,10 +82,12 @@ class CivitaiPostImage:
             if params_str:
                 print("[Civitai MCP] Auto-detected generation metadata from the workflow.")
 
+        workflow_override = _parse_workflow_json(workflow_json)
         img_bytes, content_type = civitai_metadata.encode_image(
             pil_img, file_format=file_format, a1111_params=params_str,
             embed_metadata=embed_metadata, embed_workflow=embed_workflow,
             prompt=prompt, extra_pnginfo=extra_pnginfo, jpg_quality=jpg_quality,
+            workflow_override=workflow_override,
         )
         img_base64 = base64.b64encode(img_bytes).decode("utf-8")
 
@@ -118,9 +140,11 @@ class CivitaiCreatePost:
             "optional": {
                 "title": ("STRING", {"default": "", "multiline": False}),
                 "description": ("STRING", {"default": "", "multiline": True}),
+                "max_images_per_post": ("INT", {"default": 20, "min": 1, "max": 20, "tooltip": "Civitai allows at most 20 images per post. If more images are passed, they are split across multiple posts of up to this many images each."}),
                 "model_version_id": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "collection_id": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "a1111_params": ("STRING", {"default": "", "multiline": True, "tooltip": "A1111-format generation parameters to embed. Wire ComfyUI-Image-Saver's 'a1111_params' output here for full Civitai metadata. Accepts a list (one per image); a single value is applied to all images. If empty, auto-detected from the workflow."}),
+                "workflow_json": ("STRING", {"default": "", "multiline": True, "forceInput": True, "tooltip": "ComfyUI workflow JSON to embed (PNG only). Wire a Civitai metadata loader's 'workflow_json' output here to preserve the original graph of re-posted images. Takes precedence over the live workflow; falls back to it when empty."}),
                 "embed_metadata": ("BOOLEAN", {"default": True, "tooltip": "Embed generation parameters into each uploaded image so Civitai shows full metadata."}),
                 "embed_workflow": ("BOOLEAN", {"default": True, "tooltip": "Embed the ComfyUI workflow + prompt graph (PNG only) so the post is reproducible by drag-and-drop into ComfyUI."}),
                 "file_format": (["png", "jpg"], {"default": "png", "tooltip": "PNG carries metadata + workflow in text chunks (lossless). JPG carries the parameters in EXIF (smaller, no workflow)."}),
@@ -136,8 +160,12 @@ class CivitaiCreatePost:
 
     OUTPUT_NODE = True
 
-    RETURN_TYPES = ("INT", "STRING")
-    RETURN_NAMES = ("post_id", "post_url")
+    RETURN_TYPES = ("INT", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("post_id", "post_url", "post_ids_text", "post_urls_text")
+    # post_id/post_url are lists (one entry per post created); post_ids_text and
+    # post_urls_text are single newline-joined strings so any display/save node
+    # (which only sees the first element of a list input) shows every post.
+    OUTPUT_IS_LIST = (True, True, False, False)
     FUNCTION = "create_post"
     CATEGORY = "Civitai-mcp"
 
@@ -146,26 +174,47 @@ class CivitaiCreatePost:
         """INPUT_IS_LIST delivers every input as a list; take the first scalar."""
         return value[0] if isinstance(value, list) and len(value) > 0 else default
 
-    def create_post(self, images, publish, title="", description="", model_version_id=0,
-                    collection_id=0, a1111_params="", embed_metadata=True, embed_workflow=True,
-                    file_format="png", jpg_quality=95, prompt=None, extra_pnginfo=None):
+    @staticmethod
+    def _per_image(values, idx, default=""):
+        """Resolve a per-image value from a string list for image ``idx``.
+
+        A single-element list is broadcast to every image; otherwise the entry at
+        ``idx`` is used, falling back to ``default`` when there are more images
+        than entries.
+        """
+        if not values:
+            return default
+        if len(values) == 1:
+            return values[0]
+        return values[idx] if idx < len(values) else default
+
+    def create_post(self, images, publish, title="", description="", max_images_per_post=20,
+                    model_version_id=0, collection_id=0, a1111_params="", workflow_json="",
+                    embed_metadata=True, embed_workflow=True, file_format="png", jpg_quality=95,
+                    prompt=None, extra_pnginfo=None):
         # With INPUT_IS_LIST, every argument is a list. Scalars take the first item.
         single_publish = self._first(publish, True)
         single_title = self._first(title, "")
         single_desc = self._first(description, "")
+        single_max_per_post = self._first(max_images_per_post, 20)
         single_model_version = self._first(model_version_id, 0)
         single_collection = self._first(collection_id, 0)
         single_embed_metadata = self._first(embed_metadata, True)
         single_embed_workflow = self._first(embed_workflow, True)
         single_format = self._first(file_format, "png")
         single_quality = self._first(jpg_quality, 95)
-        # Workflow/prompt graph is shared across the batch.
+        # Live workflow/prompt graph is shared across the batch (fallback only).
         graph = self._first(prompt, None)
         extra = self._first(extra_pnginfo, None)
 
-        # Per-image metadata list: map by index, broadcast a single value to all.
+        # Per-image metadata lists: map by index, broadcast a single value to all.
+        # Each image must carry its *own* original workflow so dragging it back
+        # into ComfyUI reproduces that exact image -- a shared workflow would be
+        # wrong for every image but one.
         params_list = a1111_params if isinstance(a1111_params, list) else [a1111_params]
         params_list = [p for p in params_list if isinstance(p, str)]
+        workflow_json_list = workflow_json if isinstance(workflow_json, list) else [workflow_json]
+        workflow_json_list = [w for w in workflow_json_list if isinstance(w, str)]
 
         post_images = []
         all_individual_images = []
@@ -184,26 +233,27 @@ class CivitaiCreatePost:
         if num_images == 0:
             raise ValueError("No valid images passed to Civitai Create Post node.")
 
-        print(f"[Civitai MCP] Processing {num_images} total images for a single post...")
+        print(f"[Civitai MCP] Processing {num_images} total image(s)...")
 
         for idx, single_img in enumerate(all_individual_images):
             pil_img = _tensor_to_pil(single_img)
             width, height = pil_img.size
 
-            # Resolve this image's parameters string.
-            if len(params_list) == 1:
-                params_str = params_list[0].strip()        # broadcast single value
-            elif idx < len(params_list):
-                params_str = params_list[idx].strip()       # per-image
-            else:
-                params_str = ""                              # more images than entries
+            # Resolve this image's parameters string (broadcast single value,
+            # else map by index, else empty when there are more images than entries).
+            params_str = self._per_image(params_list, idx).strip()
             if single_embed_metadata and not params_str:
                 params_str = civitai_metadata.auto_build_params(graph, width=width, height=height)
+
+            # Resolve this image's workflow the same way; a wired workflow_json
+            # (the image's own original graph) wins over the live one.
+            workflow_override = _parse_workflow_json(self._per_image(workflow_json_list, idx))
 
             img_bytes, content_type = civitai_metadata.encode_image(
                 pil_img, file_format=single_format, a1111_params=params_str,
                 embed_metadata=single_embed_metadata, embed_workflow=single_embed_workflow,
                 prompt=graph, extra_pnginfo=extra, jpg_quality=single_quality,
+                workflow_override=workflow_override,
             )
             img_base64 = base64.b64encode(img_bytes).decode("utf-8")
 
@@ -221,25 +271,52 @@ class CivitaiCreatePost:
                 "type": "image"
             })
             
-        final_title = single_title.strip() if isinstance(single_title, str) and single_title.strip() else None
+        base_title = single_title.strip() if isinstance(single_title, str) and single_title.strip() else None
         final_desc = single_desc.strip() if isinstance(single_desc, str) and single_desc.strip() else None
-        
-        print(f"[Civitai MCP] Creating multi-image post with {len(post_images)} images...")
-        post_res = civitai_api.create_post(
-            images=post_images,
-            title=final_title,
-            detail=final_desc,
-            publish=single_publish,
-            model_version_id=single_model_version if single_model_version > 0 else None,
-            collection_id=single_collection if single_collection > 0 else None
-        )
-        
-        post_id = post_res.get("id", 0)
-        post_url = post_res.get("url", f"https://civitai.com/posts/{post_id}" if post_id else "")
-        
-        print(f"[Civitai MCP] Multi-image post created successfully! URL: {post_url}")
-        
-        return (post_id, post_url)
+
+        # Civitai allows at most 20 images per post; clamp and split into chunks.
+        try:
+            chunk_size = int(single_max_per_post)
+        except (TypeError, ValueError):
+            chunk_size = 20
+        chunk_size = max(1, min(20, chunk_size))
+
+        chunks = [post_images[i:i + chunk_size] for i in range(0, len(post_images), chunk_size)]
+        multiple = len(chunks) > 1
+        if multiple:
+            print(f"[Civitai MCP] {len(post_images)} images exceed {chunk_size} per post; creating {len(chunks)} posts.")
+
+        post_ids = []
+        post_urls = []
+        for chunk_idx, chunk in enumerate(chunks):
+            # Suffix the title so split posts are distinguishable on the profile.
+            if base_title and multiple:
+                chunk_title = f"{base_title} ({chunk_idx + 1})"
+            else:
+                chunk_title = base_title
+
+            print(f"[Civitai MCP] Creating post {chunk_idx + 1}/{len(chunks)} with {len(chunk)} image(s)...")
+            post_res = civitai_api.create_post(
+                images=chunk,
+                title=chunk_title,
+                detail=final_desc,
+                publish=single_publish,
+                model_version_id=single_model_version if single_model_version > 0 else None,
+                collection_id=single_collection if single_collection > 0 else None
+            )
+
+            post_id = post_res.get("id", 0)
+            post_url = post_res.get("url", f"https://civitai.com/posts/{post_id}" if post_id else "")
+            post_ids.append(post_id)
+            post_urls.append(post_url)
+            print(f"[Civitai MCP] Post created successfully! URL: {post_url}")
+
+        # Newline-joined scalar copies for display/save nodes that only read the
+        # first element of a list input.
+        post_ids_text = "\n".join(str(pid) for pid in post_ids)
+        post_urls_text = "\n".join(post_urls)
+
+        return (post_ids, post_urls, post_ids_text, post_urls_text)
 
 
 DEFAULT_CHECKPOINTS = {

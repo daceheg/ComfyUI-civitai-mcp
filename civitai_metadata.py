@@ -621,8 +621,204 @@ def auto_build_params(prompt_graph, width=None, height=None, api_key=None):
     return build_a1111_params(positive, negative, params, resources, width=width, height=height)
 
 
+def _decode_exif_user_comment(raw):
+    """Decode an EXIF UserComment blob (A1111/Civitai store params here for JPEG).
+
+    The tag is an 8-byte character-code prefix followed by the text. We handle the
+    ``UNICODE`` (UTF-16) and ``ASCII`` prefixes A1111 uses, and fall back to a
+    best-effort UTF-8/latin-1 decode for anything else. Returns a str or "".
+    """
+    if isinstance(raw, str):
+        return raw
+    if not isinstance(raw, (bytes, bytearray)):
+        return ""
+    raw = bytes(raw)
+    code = raw[:8]
+    if code.startswith(b"UNICODE"):
+        payload = raw[8:]
+        for enc in ("utf-16-be", "utf-16-le", "utf-16"):
+            try:
+                return payload.decode(enc).rstrip("\x00")
+            except Exception:
+                continue
+        return ""
+    if code.startswith(b"ASCII"):
+        return raw[8:].split(b"\x00", 1)[0].decode("ascii", "ignore")
+    # Unknown/absent prefix: try utf-8 then latin-1.
+    for enc in ("utf-8", "latin-1"):
+        try:
+            return raw.decode(enc).rstrip("\x00")
+        except Exception:
+            continue
+    return ""
+
+
+def extract_embedded_metadata(pil_img):
+    """Pull generation metadata out of an already-opened image.
+
+    Reads, in order of preference:
+      * an A1111/Civitai ``parameters`` string (PNG text chunk or JPEG EXIF
+        UserComment) -- the exact string the Civitai post nodes want;
+      * the ComfyUI ``prompt`` graph (stock SaveImage embeds this, *not* a
+        parameters string) so we can synthesize one via ``auto_build_params``;
+      * the ComfyUI ``workflow`` graph, passed through for re-embedding and for
+        drag-and-drop reproducibility.
+
+    Returns a dict: ``a1111_params`` (str), ``prompt_graph`` (dict|None),
+    ``workflow`` (dict|None). Any field may be empty/None.
+    """
+    result = {"a1111_params": "", "prompt_graph": None, "workflow": None}
+    if pil_img is None:
+        return result
+
+    # PNG-style text chunks live in .info; JPEG params live in EXIF.
+    info = getattr(pil_img, "info", {}) or {}
+
+    params = info.get("parameters")
+    if isinstance(params, bytes):
+        params = params.decode("utf-8", "ignore")
+    if isinstance(params, str) and params.strip():
+        result["a1111_params"] = params.strip()
+
+    # ComfyUI prompt / workflow JSON chunks (stock SaveImage).
+    for key, dest in (("prompt", "prompt_graph"), ("workflow", "workflow")):
+        blob = info.get(key)
+        if isinstance(blob, (bytes, bytearray)):
+            blob = bytes(blob).decode("utf-8", "ignore")
+        if isinstance(blob, str) and blob.strip():
+            try:
+                result[dest] = json.loads(blob)
+            except Exception:
+                pass
+        elif isinstance(blob, dict):
+            result[dest] = blob
+
+    # JPEG: parameters string lives in EXIF UserComment.
+    if not result["a1111_params"]:
+        try:
+            exif = pil_img.getexif()
+            exif_ifd = exif.get_ifd(IFD.Exif)
+            raw = exif_ifd.get(_EXIF_USER_COMMENT)
+            decoded = _decode_exif_user_comment(raw)
+            if decoded.strip():
+                result["a1111_params"] = decoded.strip()
+        except Exception:
+            pass
+
+    # No explicit parameters string, but a prompt graph -> synthesize one so the
+    # downstream post nodes still get full metadata (the stock-SaveImage case).
+    if not result["a1111_params"] and isinstance(result["prompt_graph"], dict):
+        synthesized = auto_build_params(
+            result["prompt_graph"],
+            width=getattr(pil_img, "width", None),
+            height=getattr(pil_img, "height", None),
+        )
+        if synthesized:
+            result["a1111_params"] = synthesized
+
+    return result
+
+
+# Maps an A1111 field label (lower-cased) to a (output_key, caster) pair.
+def _to_int(v):
+    try:
+        return int(float(v))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _to_float(v):
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def parse_a1111_params(params):
+    """Parse an A1111 ``parameters`` string into individual fields.
+
+    Inverse of :func:`build_a1111_params`. Handles the standard layout:
+
+        <positive prompt>
+        Negative prompt: <negative>
+        Steps: N, Sampler: X, CFG scale: C, Seed: S, Size: WxH, ...
+
+    The settings line is comma-separated ``Key: value`` pairs, but commas inside
+    bracketed/JSON values (e.g. ``Civitai resources: [...]``) must not split a
+    pair, so we only split on commas that are followed by a ``Key:`` token.
+
+    Returns a dict with: prompt, negative_prompt, seed, steps, cfg_scale,
+    sampler_name, width, height. Missing fields get empty/zero defaults.
+    """
+    out = {
+        "prompt": "", "negative_prompt": "", "seed": 0, "steps": 0,
+        "cfg_scale": 0.0, "sampler_name": "", "width": 0, "height": 0,
+    }
+    if not isinstance(params, str) or not params.strip():
+        return out
+
+    lines = params.split("\n")
+
+    # Locate the "Negative prompt:" line and the settings line (last line that
+    # looks like comma-separated Key: value pairs).
+    neg_idx = None
+    for i, line in enumerate(lines):
+        if line.startswith("Negative prompt:"):
+            neg_idx = i
+            break
+
+    # Settings line: a trailing line containing "Key: value" pairs. A1111 puts it
+    # on the last line; detect by the presence of a known key.
+    settings_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        if re.search(r"(?:^|,\s*)(Steps|Sampler|CFG scale|Seed|Size|Version):", lines[i]):
+            settings_idx = i
+            break
+
+    # Positive prompt: everything before the negative line (or before settings).
+    pos_end = neg_idx if neg_idx is not None else (settings_idx if settings_idx is not None else len(lines))
+    out["prompt"] = "\n".join(lines[:pos_end]).strip()
+
+    # Negative prompt: from the negative line up to the settings line.
+    if neg_idx is not None:
+        neg_end = settings_idx if settings_idx is not None and settings_idx > neg_idx else len(lines)
+        neg_lines = lines[neg_idx:neg_end]
+        neg_lines[0] = neg_lines[0][len("Negative prompt:"):]
+        out["negative_prompt"] = "\n".join(neg_lines).strip()
+
+    if settings_idx is None:
+        return out
+
+    settings = lines[settings_idx]
+    # Split on commas that precede a "Key:" token, so JSON/bracketed values stay intact.
+    pairs = re.split(r",\s*(?=[A-Za-z][\w ]*:\s)", settings)
+    fields = {}
+    for pair in pairs:
+        if ":" not in pair:
+            continue
+        key, _, value = pair.partition(":")
+        fields[key.strip().lower()] = value.strip()
+
+    if "steps" in fields:
+        out["steps"] = _to_int(fields["steps"])
+    if "sampler" in fields:
+        out["sampler_name"] = fields["sampler"]
+    if "cfg scale" in fields:
+        out["cfg_scale"] = _to_float(fields["cfg scale"])
+    if "seed" in fields:
+        out["seed"] = _to_int(fields["seed"])
+    if "size" in fields:
+        m = re.match(r"\s*(\d+)\s*x\s*(\d+)", fields["size"])
+        if m:
+            out["width"] = int(m.group(1))
+            out["height"] = int(m.group(2))
+
+    return out
+
+
 def encode_image(pil_img, file_format="png", a1111_params="", embed_metadata=True,
-                 embed_workflow=True, prompt=None, extra_pnginfo=None, jpg_quality=95):
+                 embed_workflow=True, prompt=None, extra_pnginfo=None, jpg_quality=95,
+                 workflow_override=None):
     """
     Encode a PIL image to bytes with the requested metadata embedded.
 
@@ -633,6 +829,11 @@ def encode_image(pil_img, file_format="png", a1111_params="", embed_metadata=Tru
     Unicode prompts round-trip.
     JPG: ``parameters`` written to EXIF UserComment (UNICODE/UTF-16BE), matching
     the A1111/Civitai convention. Workflow chunks are PNG-only.
+
+    ``workflow_override`` (a dict) takes precedence over the live ``prompt`` /
+    ``extra_pnginfo`` graph: when a previously-saved image's workflow is supplied
+    (e.g. from a Civitai metadata loader) it is embedded as the ``workflow``
+    chunk so the post reproduces the *original* graph, not the current run's.
     """
     fmt = (file_format or "png").lower()
     buffered = io.BytesIO()
@@ -655,10 +856,14 @@ def encode_image(pil_img, file_format="png", a1111_params="", embed_metadata=Tru
     if embed_metadata and a1111_params:
         pnginfo.add_text("parameters", a1111_params)
     if embed_workflow:
-        if prompt is not None:
-            pnginfo.add_text("prompt", json.dumps(prompt))
-        if extra_pnginfo is not None and isinstance(extra_pnginfo, dict):
-            for key, value in extra_pnginfo.items():
-                pnginfo.add_text(key, json.dumps(value))
+        if isinstance(workflow_override, dict) and workflow_override:
+            # Wired workflow wins: embed the original graph from the loaded image.
+            pnginfo.add_text("workflow", json.dumps(workflow_override))
+        else:
+            if prompt is not None:
+                pnginfo.add_text("prompt", json.dumps(prompt))
+            if extra_pnginfo is not None and isinstance(extra_pnginfo, dict):
+                for key, value in extra_pnginfo.items():
+                    pnginfo.add_text(key, json.dumps(value))
     pil_img.save(buffered, format="PNG", pnginfo=pnginfo)
     return buffered.getvalue(), "image/png"
