@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-civitai-mcp"
 description = "ComfyUI custom nodes for posting images, fetching model/image metadata, and interacting with Civitai daily challenges via the Civitai MCP server."
-version = "1.0.2"
+version = "1.1.0"
 license = { file = "LICENSE" }
 dependencies = []
 
