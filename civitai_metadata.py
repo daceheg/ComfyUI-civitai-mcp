@@ -22,8 +22,8 @@ import os
 import re
 import json
 import hashlib
-import urllib.request
-import urllib.error
+
+import requests
 
 try:
     import folder_paths  # provided by ComfyUI at runtime
@@ -139,14 +139,15 @@ def _fetch_by_hash(sha256, api_key=None):
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
+        response = requests.get(url, headers=headers, timeout=30)
+        if response.status_code == 404:
             return None  # model not on Civitai -- expected, not an error
-        print(f"[Civitai MCP] Warning: by-hash lookup failed (HTTP {e.code}) for {sha256[:10]}")
+        response.raise_for_status()
+        return response.json()
+    except requests.HTTPError as e:
+        code = e.response.status_code if e.response is not None else "?"
+        print(f"[Civitai MCP] Warning: by-hash lookup failed (HTTP {code}) for {sha256[:10]}")
     except Exception as e:
         print(f"[Civitai MCP] Warning: by-hash lookup error for {sha256[:10]}: {e}")
     return None

@@ -223,7 +223,7 @@ Breaks an A1111/Civitai `parameters` string into individual typed fields. Wire i
 
 ## 🔒 Security & Privacy
 
-This node pack communicates directly with `https://mcp.civitai.com/mcp` using native Python request libraries (`urllib`). Your API key is sent securely in the request header and is never stored, tracked, or sent to third-party endpoints.
+This node pack communicates only with Civitai's own endpoints (`https://mcp.civitai.com` and `https://civitai.com`) using the standard Python `requests` library. Your API key is sent solely as an `Authorization: Bearer` header to Civitai to authenticate to your account, and is never logged, stored elsewhere, or sent to any third-party endpoint.
 
 ---
 
