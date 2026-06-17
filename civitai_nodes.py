@@ -3,6 +3,13 @@ import base64
 import torch
 from PIL import Image
 from . import civitai_api
+from . import civitai_metadata
+
+
+def _tensor_to_pil(image_tensor):
+    """Convert a single ComfyUI image tensor [H, W, C] to a PIL image."""
+    img_np = (image_tensor.cpu().numpy() * 255).clip(0, 255).astype("uint8")
+    return Image.fromarray(img_np)
 
 class CivitaiPostImage:
     @classmethod
@@ -17,7 +24,16 @@ class CivitaiPostImage:
                 "description": ("STRING", {"default": "", "multiline": True}),
                 "model_version_id": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "collection_id": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-            }
+                "a1111_params": ("STRING", {"default": "", "multiline": True, "tooltip": "A1111-format generation parameters to embed. Wire ComfyUI-Image-Saver's 'a1111_params' output here for full Civitai metadata (prompt, sampler, Civitai resources/AIRs). If empty, the node auto-detects from the workflow."}),
+                "embed_metadata": ("BOOLEAN", {"default": True, "tooltip": "Embed generation parameters into the uploaded image so Civitai shows full metadata."}),
+                "embed_workflow": ("BOOLEAN", {"default": True, "tooltip": "Embed the ComfyUI workflow + prompt graph (PNG only) so the post is reproducible by drag-and-drop into ComfyUI."}),
+                "file_format": (["png", "jpg"], {"default": "png", "tooltip": "PNG carries metadata + workflow in text chunks (lossless). JPG carries the parameters in EXIF (smaller, no workflow)."}),
+                "jpg_quality": ("INT", {"default": 95, "min": 1, "max": 100, "tooltip": "JPEG quality (only used when file_format is jpg)."}),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
         }
 
     OUTPUT_NODE = True
@@ -27,28 +43,36 @@ class CivitaiPostImage:
     FUNCTION = "post_image"
     CATEGORY = "Civitai-mcp"
 
-    def post_image(self, image, publish, title="", description="", model_version_id=0, collection_id=0):
+    def post_image(self, image, publish, title="", description="", model_version_id=0,
+                   collection_id=0, a1111_params="", embed_metadata=True, embed_workflow=True,
+                   file_format="png", jpg_quality=95, prompt=None, extra_pnginfo=None):
         # ComfyUI images are tensors with shape [B, H, W, C]
         # We only take the first image if it's a batch
         if len(image.shape) == 4 and image.shape[0] > 1:
             print(f"[Civitai MCP] Warning: 'Civitai Post Image' received a batch of {image.shape[0]} images. Only the first image will be posted. Use 'Civitai Create Post' for multiple images.")
-        
+
         single_img = image[0]
-        
-        # Convert to numpy uint8
-        img_np = (single_img.cpu().numpy() * 255).clip(0, 255).astype('uint8')
-        pil_img = Image.fromarray(img_np)
-        
-        # Save PIL image to base64
-        buffered = io.BytesIO()
-        pil_img.save(buffered, format="PNG")
-        img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-        
+        pil_img = _tensor_to_pil(single_img)
         width, height = pil_img.size
-        print(f"[Civitai MCP] Uploading single image ({width}x{height})...")
-        
+
+        # Resolve the parameters string: explicit input wins, else auto-detect.
+        params_str = a1111_params.strip() if isinstance(a1111_params, str) else ""
+        if embed_metadata and not params_str:
+            params_str = civitai_metadata.auto_build_params(prompt, width=width, height=height)
+            if params_str:
+                print("[Civitai MCP] Auto-detected generation metadata from the workflow.")
+
+        img_bytes, content_type = civitai_metadata.encode_image(
+            pil_img, file_format=file_format, a1111_params=params_str,
+            embed_metadata=embed_metadata, embed_workflow=embed_workflow,
+            prompt=prompt, extra_pnginfo=extra_pnginfo, jpg_quality=jpg_quality,
+        )
+        img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+
+        print(f"[Civitai MCP] Uploading single image ({width}x{height}, {content_type})...")
+
         # Upload image to Civitai via MCP
-        upload_res = civitai_api.upload_image(img_base64, content_type="image/png")
+        upload_res = civitai_api.upload_image(img_base64, content_type=content_type)
         uuid = upload_res.get("uuid")
         if not uuid:
             raise Exception("Failed to upload image: UUID was not returned.")
@@ -96,7 +120,16 @@ class CivitaiCreatePost:
                 "description": ("STRING", {"default": "", "multiline": True}),
                 "model_version_id": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "collection_id": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-            }
+                "a1111_params": ("STRING", {"default": "", "multiline": True, "tooltip": "A1111-format generation parameters to embed. Wire ComfyUI-Image-Saver's 'a1111_params' output here for full Civitai metadata. Accepts a list (one per image); a single value is applied to all images. If empty, auto-detected from the workflow."}),
+                "embed_metadata": ("BOOLEAN", {"default": True, "tooltip": "Embed generation parameters into each uploaded image so Civitai shows full metadata."}),
+                "embed_workflow": ("BOOLEAN", {"default": True, "tooltip": "Embed the ComfyUI workflow + prompt graph (PNG only) so the post is reproducible by drag-and-drop into ComfyUI."}),
+                "file_format": (["png", "jpg"], {"default": "png", "tooltip": "PNG carries metadata + workflow in text chunks (lossless). JPG carries the parameters in EXIF (smaller, no workflow)."}),
+                "jpg_quality": ("INT", {"default": 95, "min": 1, "max": 100, "tooltip": "JPEG quality (only used when file_format is jpg)."}),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
         }
 
     INPUT_IS_LIST = True
@@ -108,17 +141,35 @@ class CivitaiCreatePost:
     FUNCTION = "create_post"
     CATEGORY = "Civitai-mcp"
 
-    def create_post(self, images, publish, title, description, model_version_id, collection_id):
-        # Extract scalar options from lists
-        single_publish = publish[0] if isinstance(publish, list) and len(publish) > 0 else True
-        single_title = title[0] if isinstance(title, list) and len(title) > 0 else ""
-        single_desc = description[0] if isinstance(description, list) and len(description) > 0 else ""
-        single_model_version = model_version_id[0] if isinstance(model_version_id, list) and len(model_version_id) > 0 else 0
-        single_collection = collection_id[0] if isinstance(collection_id, list) and len(collection_id) > 0 else 0
+    @staticmethod
+    def _first(value, default=None):
+        """INPUT_IS_LIST delivers every input as a list; take the first scalar."""
+        return value[0] if isinstance(value, list) and len(value) > 0 else default
+
+    def create_post(self, images, publish, title="", description="", model_version_id=0,
+                    collection_id=0, a1111_params="", embed_metadata=True, embed_workflow=True,
+                    file_format="png", jpg_quality=95, prompt=None, extra_pnginfo=None):
+        # With INPUT_IS_LIST, every argument is a list. Scalars take the first item.
+        single_publish = self._first(publish, True)
+        single_title = self._first(title, "")
+        single_desc = self._first(description, "")
+        single_model_version = self._first(model_version_id, 0)
+        single_collection = self._first(collection_id, 0)
+        single_embed_metadata = self._first(embed_metadata, True)
+        single_embed_workflow = self._first(embed_workflow, True)
+        single_format = self._first(file_format, "png")
+        single_quality = self._first(jpg_quality, 95)
+        # Workflow/prompt graph is shared across the batch.
+        graph = self._first(prompt, None)
+        extra = self._first(extra_pnginfo, None)
+
+        # Per-image metadata list: map by index, broadcast a single value to all.
+        params_list = a1111_params if isinstance(a1111_params, list) else [a1111_params]
+        params_list = [p for p in params_list if isinstance(p, str)]
 
         post_images = []
         all_individual_images = []
-        
+
         # Flatten the input list of tensors
         for img_tensor in images:
             if len(img_tensor.shape) == 3:
@@ -132,25 +183,37 @@ class CivitaiCreatePost:
         num_images = len(all_individual_images)
         if num_images == 0:
             raise ValueError("No valid images passed to Civitai Create Post node.")
-            
+
         print(f"[Civitai MCP] Processing {num_images} total images for a single post...")
-        
+
         for idx, single_img in enumerate(all_individual_images):
-            img_np = (single_img.cpu().numpy() * 255).clip(0, 255).astype('uint8')
-            pil_img = Image.fromarray(img_np)
-            
-            buffered = io.BytesIO()
-            pil_img.save(buffered, format="PNG")
-            img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-            
+            pil_img = _tensor_to_pil(single_img)
             width, height = pil_img.size
-            print(f"[Civitai MCP] Uploading image {idx + 1}/{num_images} ({width}x{height})...")
-            
-            upload_res = civitai_api.upload_image(img_base64, content_type="image/png")
+
+            # Resolve this image's parameters string.
+            if len(params_list) == 1:
+                params_str = params_list[0].strip()        # broadcast single value
+            elif idx < len(params_list):
+                params_str = params_list[idx].strip()       # per-image
+            else:
+                params_str = ""                              # more images than entries
+            if single_embed_metadata and not params_str:
+                params_str = civitai_metadata.auto_build_params(graph, width=width, height=height)
+
+            img_bytes, content_type = civitai_metadata.encode_image(
+                pil_img, file_format=single_format, a1111_params=params_str,
+                embed_metadata=single_embed_metadata, embed_workflow=single_embed_workflow,
+                prompt=graph, extra_pnginfo=extra, jpg_quality=single_quality,
+            )
+            img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+
+            print(f"[Civitai MCP] Uploading image {idx + 1}/{num_images} ({width}x{height}, {content_type})...")
+
+            upload_res = civitai_api.upload_image(img_base64, content_type=content_type)
             uuid = upload_res.get("uuid")
             if not uuid:
                 raise Exception(f"Failed to upload image {idx + 1}: UUID was not returned.")
-                
+
             post_images.append({
                 "uuid": uuid,
                 "width": width,
