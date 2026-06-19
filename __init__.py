@@ -4,6 +4,7 @@ from .civitai_nodes import (
     CivitaiGetCurrentChallenge,
     CivitaiGetModelMetadata,
     CivitaiGetImageMetadata,
+    CivitaiGetImageMetadataJSON,
     CivitaiAccountStatus,
     CivitaiGetImage
 )
@@ -19,6 +20,7 @@ NODE_CLASS_MAPPINGS = {
     "CivitaiGetCurrentChallenge": CivitaiGetCurrentChallenge,
     "CivitaiGetModelMetadata": CivitaiGetModelMetadata,
     "CivitaiGetImageMetadata": CivitaiGetImageMetadata,
+    "CivitaiGetImageMetadataJSON": CivitaiGetImageMetadataJSON,
     "CivitaiAccountStatus": CivitaiAccountStatus,
     "CivitaiGetImage": CivitaiGetImage,
     "CivitaiLoadImageWithMetadata": CivitaiLoadImageWithMetadata,
@@ -32,6 +34,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CivitaiGetCurrentChallenge": "Civitai Get Current Challenge",
     "CivitaiGetModelMetadata": "Civitai Get Model Metadata",
     "CivitaiGetImageMetadata": "Civitai Get Image Metadata",
+    "CivitaiGetImageMetadataJSON": "Civitai Get Image Metadata (JSON)",
     "CivitaiAccountStatus": "Civitai Account Status",
     "CivitaiGetImage": "Civitai Get Image",
     "CivitaiLoadImageWithMetadata": "Civitai Load Image (with Metadata)",

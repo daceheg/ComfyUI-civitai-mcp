@@ -439,6 +439,7 @@ class CivitaiGetModelMetadata:
     RETURN_NAMES = ("model_id", "model_name", "version_name", "base_model", "trigger_words", "air_urn", "download_url")
     FUNCTION = "get_metadata"
     CATEGORY = "Civitai-mcp"
+    OUTPUT_NODE = True
 
     def get_metadata(self, model_version_id):
         if model_version_id <= 0:
@@ -473,14 +474,21 @@ class CivitaiGetImageMetadata:
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "FLOAT", "STRING", "INT", "INT", "STRING")
-    RETURN_NAMES = ("prompt", "negative_prompt", "seed", "steps", "cfg_scale", "sampler_name", "width", "height", "tags")
+    RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "FLOAT", "STRING", "INT", "INT", "STRING",
+                    "STRING",
+                    "STRING", "STRING", "STRING", "INT", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("prompt", "negative_prompt", "seed", "steps", "cfg_scale", "sampler_name", "width", "height", "tags",
+                    "stats_json",
+                    "url", "username", "base_model", "post_id", "created_at", "nsfw_level", "model_version_ids")
     FUNCTION = "get_metadata"
     CATEGORY = "Civitai-mcp"
+    OUTPUT_NODE = True
 
     def get_metadata(self, image_id, max_rating="XXX"):
         if image_id <= 0:
-            return ("", "", 0, 0, 0.0, "", 0, 0, "")
+            return ("", "", 0, 0, 0.0, "", 0, 0, "",
+                    "{}",
+                    "", "", "", 0, "", "", "")
 
         data = civitai_api.get_image_metadata(image_id, nsfw_level=max_rating)
 
@@ -501,8 +509,57 @@ class CivitaiGetImageMetadata:
         # Tags come from withTags=true as a list of {id, name}; expose names as a comma-separated string
         tags = ", ".join(t.get("name", "") for t in (data.get("tags") or []) if t.get("name"))
 
+        # Reaction/engagement counts live under "stats" (Civitai now populates these);
+        # pass the whole object through as JSON so new reaction types survive automatically
+        stats_json = json.dumps(data.get("stats") or {})
+
+        # Remaining top-level image fields
+        url = data.get("url", "")
+        username = data.get("username", "")
+        base_model = data.get("baseModel", "")
+        post_id = int(data.get("postId") or 0)
+        created_at = data.get("createdAt", "")
+        nsfw_level = data.get("nsfwLevel", "")
+        model_version_ids = ", ".join(str(v) for v in (data.get("modelVersionIds") or []))
+
         print(f"[Civitai MCP] Retrieved image metadata for ID {image_id} (max rating: {max_rating})")
-        return (prompt, negative_prompt, seed, steps, cfg_scale, sampler_name, width, height, tags)
+        return (prompt, negative_prompt, seed, steps, cfg_scale, sampler_name, width, height, tags,
+                stats_json,
+                url, username, base_model, post_id, created_at, nsfw_level, model_version_ids)
+
+
+class CivitaiGetImageMetadataJSON:
+    """Returns the complete Civitai image item as a single pretty-printed JSON string.
+
+    Use this when you want every field (including ones not broken out by
+    CivitaiGetImageMetadata) without the node changing every time Civitai adds a
+    field. The output mirrors the raw API item.
+    """
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image_id": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "max_rating": (["PG", "PG-13", "R", "X", "XXX"], {"default": "XXX"}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("metadata_json",)
+    FUNCTION = "get_metadata_json"
+    CATEGORY = "Civitai-mcp"
+    OUTPUT_NODE = True
+
+    def get_metadata_json(self, image_id, max_rating="XXX"):
+        if image_id <= 0:
+            return ("{}",)
+
+        data = civitai_api.get_image_metadata(image_id, nsfw_level=max_rating)
+        metadata_json = json.dumps(data, indent=2, ensure_ascii=False)
+
+        print(f"[Civitai MCP] Retrieved full image metadata JSON for ID {image_id} (max rating: {max_rating})")
+        return (metadata_json,)
 
 
 class CivitaiAccountStatus:
@@ -516,6 +573,7 @@ class CivitaiAccountStatus:
     RETURN_NAMES = ("username", "user_id", "is_moderator", "is_onboarded", "muted")
     FUNCTION = "get_status"
     CATEGORY = "Civitai-mcp"
+    OUTPUT_NODE = True
 
     def get_status(self):
         res = civitai_api.call_mcp_tool("whoami", {})
