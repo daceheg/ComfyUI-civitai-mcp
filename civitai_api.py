@@ -129,14 +129,28 @@ def call_mcp_tool(tool_name, arguments, api_key=None):
     return result
 
 
+_MCP_UPLOAD_LIMIT = 10 * 1024 * 1024  # 10 MB — enforced by the Civitai MCP upload_image tool
+
+
 def upload_image(base64_data, content_type="image/png", api_key=None):
     """
     Uploads base64-encoded image bytes to Civitai.
     Returns: dict with 'uuid', 'width', 'height'
     """
+    import base64 as _b64
+
     # Remove data:image/...;base64, prefix if present
     if "," in base64_data:
         base64_data = base64_data.split(",", 1)[1]
+
+    img_bytes = _b64.b64decode(base64_data)
+    if len(img_bytes) > _MCP_UPLOAD_LIMIT:
+        size_mb = len(img_bytes) / 1024 / 1024
+        raise Exception(
+            f"Image too large to upload ({size_mb:.1f} MB). "
+            f"Civitai's upload limit is 10 MB. "
+            f"Use JPEG format or reduce the output resolution to stay under this limit."
+        )
 
     arguments = {
         "data": base64_data,
