@@ -35,6 +35,7 @@ class CivitaiPostImage:
         return {
             "required": {
                 "image": ("IMAGE",),
+                "enable": ("BOOLEAN", {"default": True, "tooltip": "When disabled, skips the upload and post entirely. Use this to gate posting without bypassing the node."}),
                 "publish": ("BOOLEAN", {"default": True}),
             },
             "optional": {
@@ -62,10 +63,14 @@ class CivitaiPostImage:
     FUNCTION = "post_image"
     CATEGORY = "Civitai-mcp"
 
-    def post_image(self, image, publish, title="", description="", model_version_id=0,
+    def post_image(self, image, enable, publish, title="", description="", model_version_id=0,
                    collection_id=0, a1111_params="", workflow_json="", embed_metadata=True,
                    embed_workflow=True, file_format="png", jpg_quality=95, prompt=None,
                    extra_pnginfo=None):
+        if not enable:
+            print("[Civitai MCP] Posting disabled — skipping upload.")
+            return (0, "")
+
         # ComfyUI images are tensors with shape [B, H, W, C]
         # We only take the first image if it's a batch
         if len(image.shape) == 4 and image.shape[0] > 1:
@@ -135,6 +140,7 @@ class CivitaiCreatePost:
         return {
             "required": {
                 "images": ("IMAGE",),
+                "enable": ("BOOLEAN", {"default": True, "tooltip": "When disabled, skips the upload and post entirely. Use this to gate posting without bypassing the node."}),
                 "publish": ("BOOLEAN", {"default": True}),
             },
             "optional": {
@@ -188,10 +194,14 @@ class CivitaiCreatePost:
             return values[0]
         return values[idx] if idx < len(values) else default
 
-    def create_post(self, images, publish, title="", description="", max_images_per_post=20,
+    def create_post(self, images, enable, publish, title="", description="", max_images_per_post=20,
                     model_version_id=0, collection_id=0, a1111_params="", workflow_json="",
                     embed_metadata=True, embed_workflow=True, file_format="png", jpg_quality=95,
                     prompt=None, extra_pnginfo=None):
+        if not self._first(enable, True):
+            print("[Civitai MCP] Posting disabled — skipping upload.")
+            return ([0], [""], "", "")
+
         # With INPUT_IS_LIST, every argument is a list. Scalars take the first item.
         single_publish = self._first(publish, True)
         single_title = self._first(title, "")
